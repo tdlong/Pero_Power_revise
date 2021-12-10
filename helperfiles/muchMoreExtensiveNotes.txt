@@ -1,0 +1,1249 @@
+cd /share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM
+sbatch fq2bam.sh
+
+### some notes on mapping names off the illumina sequencer to samples.
+bc=read.table("barcode.mappings.txt",header=TRUE)
+bc$RCi7=gsub("[^ACGT]","",bc$RCi7)
+bc$RCi5=gsub("[^ACGT]","",bc$RCi5)
+bc2 = data.frame(LibName=bc$Library_name,ID=bc$Sample_ID,BC=paste0(bc$RCi7,"-",bc$RCi5))
+LL = read.table("library.lookup.txt",header=TRUE)
+colnames(LL)[1]="Libname"
+  LibName    ID                BC
+1      P1 20899 TTCACATA-GTCATATT
+2      P1 20308 GTATGAGT-ACACTAAG
+3      P1 20351 CAGTCCCT-GAGAGTAT
+
+all_files=Sys.glob(file.path("/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/byplexBAM", "*.sort.bam"))
+all_files=gsub("/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/byplexBAM/", "", all_files)
+mypath="/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/byplexBAM/"
+all_files=gsub(".sort.bam", "", all_files)
+AF = matrix(unlist(strsplit(all_files, "-")),byrow=TRUE,ncol=5)
+#  "4R115" "L4" "P23" "GCAACCTG" "AGGAAGAC"
+templooky=data.frame(ID=unique(bc2$ID),mytext=rep("",length(unique(bc2$ID))))
+blah=matrix(nrow=nrow(AF),ncol=6)
+for(i in 1:nrow(AF)){
+	myrun=as.character(paste0(AF[i,1],"-",AF[i,2]))
+	myrun=substring(myrun,2)
+	mylib = LL$Libname[LL$Run==myrun]
+	mybc=as.character(paste0(AF[i,4],"-",AF[i,5]))
+	myID=bc2$ID[bc2$BC==mybc & bc2$LibName==mylib]
+	blah[i,] = c(all_files[i],i,myrun,mylib,mybc,myID)
+	}
+
+for(i in 1:nrow(templooky)){
+	cat(templooky[i,1],"\t",templooky[i,2],"\n")
+	}
+
+
+
+cd /share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM
+sbatch bam2mbam.sh
+sbatch fq2mbam.oldS.samples.sh
+
+# subsample S46 to ~1X
+module load samtools
+samtools view -bs 41.315 bysamBAM/S46.bam >temp.bam
+samtools sort temp.bam -o bysamBAM/S46_1X.bam
+mkdir fixBAM
+ref="/share/adl/tdlong/mouse_GWAS/data/ref/P.Leucopus.withUnreg.fa"
+samtools faidx $ref
+java -jar /opt/apps/picard-tools/1.87/CreateSequenceDictionary.jar ref=$ref O=/share/adl/tdlong/mouse_GWAS/data/ref/P.Leucopus.withUnreg.dict
+
+# bam files bigger than 225000000 whic I estimate to be about 0.1X
+ls bysamBAM/*.bam -alS | tr -s " " | awk '{if($5>225000000){print $9}}' | cut -d "/" -f2 | cut -d"." -f1 > newIDs.txt
+sbatch fixbam.sh
+
+## install stitch newest version
+module load R/3.6.2
+module load samtools/1.10
+git clone --recursive https://github.com/rwdavies/STITCH.git
+cd STITCH
+./scripts/install-dependencies.sh
+cd releases
+wget https://github.com/rwdavies/stitch/releases/download/1.6.6/STITCH_1.6.6.tar.gz ## or curl -O
+R CMD INSTALL STITCH_1.6.6.tar.gz
+## end install
+
+### identify samples with Bleeding time data
+p="STI8_rev/Chr23/stitch.Chr23.vcf.gz"
+zcat $p | head -n 12 | tail -n 1 | cut -f 10- >geno.samples.txt
+
+R
+k5=read.table("k5.txt",header=TRUE)
+g=scan(file="geno.samples.txt",what=character(),sep="\t")
+gtemp = g[g %in% as.character(k5$ID)]
+k6 = k5[match(gtemp,as.character(k5$ID)),]
+write.table(k6,"k6.txt")
+for(i in 1:length(gtemp)){
+	cat(gtemp2[i],"\n",file=Phillip.samples.txt,append=TRUE)
+	}
+
+wc -l Phillip.samples.txt # 348
+cat Phillip.samples.txt | tr -d ' ' > temp.txt
+mv temp.txt Phillip.samples.txt
+
+## run Stitch ....
+ls fixBAM/*.IDR.bam | grep -v S46.IDR > bamlist2.txt
+cat bamlist2.txt | sed 's:fixBAM/::' | sed 's:.IDR.bam::' > samplenames2.txt
+
+########  Nov 13 rerun Stitch on dedup NOT INDEL corrected samples
+########  The INDEL correction is NOT doing what I think it is
+
+# initially just look at chromosomes 19 & 23
+# I ran this for K=8 and K=12 (by editting the shell script)
+# I had a lot of problems with crashing and ended up using an explicit tempdir
+tdir="/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/TEMPDIR"
+--tempdir=$tdir
+
+mkdir STI8_revII
+mkdir PhilsampsII
+cat bamlist2.txt | sed 's/IDR/dedup/' >bamlist2.Nov13.txt
+sbatch stitch.Nov13.sh
+#  I should throw a K=12 impute out there
+stitch.Nov13.K12.sh 
+
+for i in {2..24};do  last=`tail -n 2 slurm-8904937_$i.out | head -n 1`;  echo -e "$i\t$last";done    
+for i in {1,4,12,15};do  last=`tail -n 2 slurm-8905529_$i.out | head -n 1`;  echo -e "$i\t$last";done  
+tail -n 15 slurm-8908223_13.out
+
+# this will create new stitch files that are censored on MAF >1% and info>0.4
+# it also creates simpler snp and hap tables (gzipped) in Philsamps folder
+p2="STI8_revII/Chr17/stitch.Chr17.vcf.gz"
+bcftools view -h $p2 | tail -n 1 | cut -f 10- | tr "\t" "\n" | awk '{printf("%s\t%s\n",NR,$1)}' >samplenames.for.awk.txt
+sbatch censor.stitch.Nov13.sh
+# and K=12 censor
+censor.stitch.Nov13.K12.sh 
+
+# Check RNAseq versus imputation calls
+cd /share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM
+# RNAseq
+/share/adl/tdlong/mouse_GWAS/spleenRNA/spleen.genos.txt
+# Chr	Pos	R20949	R20819	R20733	R20495	R20483	R20695	R20688	R20807	R20702	R20694	R20732
+# Chr10	33534	0	0	1	0	1	0	1	0	0	1	0
+
+Phillip.samples.txt
+cat Phillip.samples.txt | grep -n 20949
+83:20949
+
+cat /share/adl/tdlong/mouse_GWAS/spleenRNA/spleen.genos.txt | grep Chr23 | cut -f2,3 | awk '{printf("%s\t%s\n",$1,$2)}' | sort -k1,1 > RNA_Chr23_20949.txt
+zcat PhilsampsII/SNPs.Chr23.censor.txt.gz | cut -d " " -f2,83,84,85,86,87 | awk '{printf("%s\t%s\t%s\t%s\t%s\t%s\n",$1,$2,$3,$4,$5,$6)}' | sort -k1,1 > impute_Chr23_20949.txt
+zcat PhilsampsII/SNPs.Chr23.K12.censor.txt.gz | cut -d " " -f2,83,84,85,86,87 | awk '{printf("%s\t%s\t%s\t%s\t%s\t%s\n",$1,$2,$3,$4,$5,$6)}' | sort -k1,1 > impute_Chr23_K12_20949.txt
+join -j 1 RNA_Chr23_20949.txt impute_Chr23_20949.txt > join_20949.txt 
+join -j 1 RNA_Chr23_20949.txt impute_Chr23_K12_20949.txt > join_K12_20949.txt 
+
+module load R/3.6.2
+R
+xx=read.table("join_20949.txt",header=FALSE)
+cor(xx[,2],xx[,3:7]) 
+xx2=read.table("join_K12_20949.txt",header=FALSE)
+cor(xx2[,2],xx2[,3:7]) 
+temp=data.frame(K8=quantile(abs(xx[,2]-xx[,5]),prob=seq(0.95,0.995,0.005)), K12=quantile(abs(xx2[,2]-xx2[,5]),prob=seq(0.95,0.995,0.005)))
+temp$diff = round(temp$K12-temp$K8,3)
+temp
+            K8    K12   diff
+95%   0.030000 0.0260 -0.004
+95.5% 0.038435 0.0313 -0.007
+96%   0.053720 0.0420 -0.012
+96.5% 0.072020 0.0706 -0.001
+97%   0.127870 0.1094 -0.018
+97.5% 0.336725 0.2635 -0.073
+98%   0.827860 0.7186 -0.109
+98.5% 0.999000 0.9981 -0.001
+99%   1.000000 1.0000  0.000
+99.5% 1.000000 1.0000  0.000
+
+# basically the errors are really small.  They are comparable for K=8 and K=12, K=12 might do slightly better for quantiles 95% -> 98% 
+# but this is only for Chr23 ... so it seems a little more parsimonious to go with the smaller K.  Furthermore, the errors for the most erroneous 4%
+# of SNPs are bigger than 0.05.  And for the worst 2.5% are pretty big.  So a small fraction of SNPs are just not imputed that well 
+# irrespective of K.
+## end check 
+
+### look at distribution of info values
+chr="Chr23"
+load(file.path(paste0("STI8_revII/", chr, "/RData"), paste0("EM.all.", chr, ".RData"))) ## or similar 
+mean(info)
+qtemp =quantile(info,probs=seq(0.05,0.95,0.05))
+data.frame(row.names=names(qtemp),info=round(as.numeric(qtemp),3))
+     info
+5%  0.635
+10% 0.940
+15% 0.973
+20% 0.983
+25% 0.988
+30% 0.993
+35% 0.996
+40% 0.997
+45% 0.997
+50% 0.998
+55% 0.998
+60% 0.998
+65% 0.998
+70% 0.999
+75% 0.999
+80% 0.999
+85% 0.999
+90% 1.000
+95% 1.000
+
+zcat PhilsampsII/SNPs.Chr17.censor.rf.txt.gz | head -n 350 | tail -n 10
+
+# simulate genotype and consolidate
+# simulated samples are numbered 1-2000
+mkdir simgeno
+sbatch sim.geno.sh
+sbatch consolidate.sh
+ls -alth simgeno
+# Nov 14 10:56 SNP_Chr23.txt.gz
+# Nov 14 10:53 HAP_Chr23.txt.gz
+
+# choose SNPs to be QTL
+sbatch choose.SNP.sh
+ls -alth chooseSNP*
+# Nov 14 11:02 chooseSNP.Chr23.txt
+# Nov 14 11:01 chooseSNP.Chr19.txt
+
+## make background
+# sum of every 400th SNP (starting at 200)
+sbatch make.background.sh
+dir="PhilsampsII"
+cat $dir/SNPs.Chr*.BG.txt | awk '{for(i=1; i<=NF; i++) total[i] += $i}; END {for(i=1; i<=NF; i++){printf "%s ", total[i]};print ""}' > BACKGROUND.348.txt
+rm $dir/SNPs.*.BG.txt 
+
+### MAKE PHENOTYPES
+### the phenotypes for the real samples have 250 replicates, BG vs. noBG, 3 levels of %var, Chr19 vs. Chr23 causative
+### for fake only Chr23, noBG.  X does not contribute to background
+
+salloc -A tdlong_lab --ntasks=12 srun --pty /bin/bash -i
+module load R/3.6.2
+Rscript make.Phil.Y.R
+Rscript make.fake.Y.R
+
+cat yr.348.txt | head -n5 | cut -f1-5 -d" "
+Chr19_SL_PV1.0_nB_1692967 Chr19_SL_PV1.0_nB_1726527 Chr19_SL_PV1.0_nB_2333890 Chr19_SL_PV1.0_nB_2419764 Chr19_SL_PV1.0_nB_2426818
+0.9231 -0.4701 0.4629 0.7002 0.6465
+-1.1028 -1.5988 1.3944 0.51 0.4264
+-2.2948 -0.6877 -0.8371 -1.1519 -0.8354
+-0.3833 -1.6754 0.3919 -0.7429 0.6542
+
+cat yr.2000.txt | head -n5 | cut -f1-5 -d" "
+Chr23_SL_PV1.0_619253 Chr23_SL_PV1.0_741131 Chr23_SL_PV1.0_1461090 Chr23_SL_PV1.0_1504176 Chr23_SL_PV1.0_1740882
+-0.1331 -0.7365 -1.8932 1.1247 0.8527
+0.5145 0.3026 -1.1191 -1.5115 0.7723
+0.4417 1.1451 -0.8034 -0.4789 -1.4628
+0.7772 0.9878 -1.5336 0.4282 0.5167
+
+#  1. format of yr.348.txt & Phillip.samples.txt
+#	- columns are different sets of 348 Y's
+#	- rows are different individuals, unlabels, but given by Phillip.samples.txt
+#	- col headers describe the condition, eg. "Chr19_SL_PV1.0_nB_1008824" are phenotypes for
+#		-cause SNP at Chr19:1008825
+#		-the SL genetic model (S,A,T are single, all, ten causative SNPs)
+#		-PV1.0 means QTL accounts for 1% of total variation (also 2.5 & 5.0 tested)
+#		-nB tells me n0 background (only SNP and Ve), compared to wB where 50% of Vt is genetic
+
+###  Real phenotypes have to be in the same order as SNPs
+
+## break Chr23 into 8 pieces, write a file to break the scan into parts
+mkdir simgenoHunks
+zcat simgeno/SNP_Chr23.txt.gz | wc -l    # 352578
+zcat simgeno/HAP_Chr23.txt.gz | wc -l    # 70516001
+
+#!/bin/bash
+#SBATCH --job-name=makepheno
+#SBATCH -A tdlong_lab
+#SBATCH -p standard          
+#SBATCH --cpus-per-task=2
+zcat simgeno/HAP_Chr23.txt.gz | tail -n +2 | sort -k2,2n -k3,3n > simgeno/HAP_Chr23.sort.txt
+zcat simgeno/SNP_Chr23.txt.gz | tail -n +2 | split - -l 10000 --filter='gzip > $FILE.gz' simgenoHunks/SNPs.part.
+cat simgeno/HAP_Chr23.sort.txt | split - -l 1780000 --filter='gzip > $FILE.gz' simgenoHunks/HAPs.part.
+
+
+ls simgenoHunks/SNPs.part* | cut -f2 -d"/" | cut -f3 -d"." > temp.parts.SNP.txt
+ls simgenoHunks/HAPs.part* | cut -f2 -d"/" | cut -f3 -d"." > temp.parts.HAP.txt
+
+# eg
+# simgenoHunks/HAPs.part.aa.gz 
+# simgenoHunks/SNPs.part.aa.gz 
+
+R
+Nind=c(100,250,348,500,750,1000,1500,2000)
+part=scan("temp.parts.SNP.txt",what=character())
+temp=expand.grid(Nind,part)
+write.table(temp,"Chr23.hunks.SNP.txt",quote=FALSE,row.names=FALSE,col.names=FALSE)
+part=scan("temp.parts.HAP.txt",what=character())
+temp=expand.grid(Nind,part)
+write.table(temp,"Chr23.hunks.HAP.txt",quote=FALSE,row.names=FALSE,col.names=FALSE)
+
+wc -l Chr23.hunks.HAP.txt #320
+wc -l Chr23.hunks.SNP.txt #288
+
+# 100 aa
+# 250 aa
+# 348 aa
+
+# test ... memory needs
+sbatch test.blah.SNP.sh    # 2 core
+sbatch test.blah.HAP.sh    # 1 core
+# seff job_ID
+
+sbatch fake.geno.HAP.sh   # 1 core is enough, these are fast maybe < 30 min
+sbatch fake.geno.SNP.sh   # 2 core is enough, these can take some time for bigger N, 9-10 hours per job
+
+waiting for this job to finish = 8922252_1..288
+for i in {1..288};do  last=`tail -n 1 slurm-8922252_$i.out`;   echo -e "$i\t$last";done | grep slurm
+for i in {1..288};do  last=`tail -n 1 slurm-8922252_$i.out`;   echo -e "$i\t$last";done | grep slurm | cut -f1
+# 9,20,25,33,41,49,73,81,89,121,170,209,241,257
+# rerun fails with more memory
+sbatch fake.geno.SNP.cleanup.sh
+for i in {9,20,25,33,41,49,73,81,89,121,170,209,241,257};do  last=`tail -n 1 slurm-8934334_$i.out`;   echo -e "$i\t$last";done
+# Done Nov 16 AM
+
+cat simgeno/temppow_HAP* > simgeno/bigpow_HAP.txt
+rm simgeno/temppow_HAP*
+cat simgeno/temppow_SNP* > simgeno/bigpow_SNP.txt
+rm simgeno/temppow_SNP*
+
+sbatch preprocessBigpowerFile.sh
+# output
+pow.pseudoInd.txt 
+
+scp tdlong@hpc3.rcic.uci.edu:/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/pow.pseudoInd.txt .
+
+library(tidyverse)
+pow = read.table("pow.pseudoInd.txt")
+
+##########   these numbers come from the future!
+##########   they are estimate of power for the 348 samples
+Nind=rep(348,6)
+power=c(0.012,0.028,0.288,0.004,0.012,0.052)
+PV=rep(c("PV1.0","PV2.5","PV5.0"),2)
+Gmod=c(rep("SL",3),rep("TL",3))
+EXTRA=data.frame(Nind=Nind, power=power,PV=PV,Gmod=Gmod)
+###########
+
+
+library(grid)
+library(gridExtra)
+
+A = ggplot(pow %>% filter(Gmod=="SL"), aes(x = Nind, y = power)) + 
+  geom_line(aes(color = PV, linetype = testFlav)) + 
+  labs(y="power", x = "N individual") +
+  theme_gray(base_size = 9)
+  
+B = ggplot(pow %>% filter(Gmod=="TL"), aes(x = Nind, y = power)) + 
+  geom_line(aes(color = PV, linetype = testFlav)) + 
+  labs(y="power", x = "N individual") +
+  theme_gray(base_size = 9)
+
+C = ggplot(pow %>% filter(Gmod=="AL"), aes(x = Nind, y = power)) + 
+  geom_line(aes(color = PV, linetype = testFlav)) + 
+  labs(y="power", x = "N individual") +
+  theme_gray(base_size = 9)
+
+
+g_legend <- function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+legend <- g_legend(A + theme(legend.position='bottom'))
+
+# dotted = SNP, solid = HAP
+# top to botton SL, TL, AL
+pdf("pseudo.ind.pdf",height=5,width=4)
+grid.arrange(A+theme(legend.position='hidden'), B+theme(legend.position='hidden'),
+             C+theme(legend.position='hidden'),
+             layout_matrix=matrix(c(1,2,3)),ncol=1)
+graphics.off()
+       
+pow %>% filter(Nind==348) %>% select(PV,Gmod,testFlav,power)
+PV Gmod testFlav power
+PV1.0   AL      SNP 0.000
+PV1.0   SL      SNP 0.000
+PV1.0   TL      SNP 0.000
+PV2.5   AL      SNP 0.000
+PV2.5   SL      SNP 0.000
+PV2.5   TL      SNP 0.008
+PV5.0   AL      SNP 0.156
+PV5.0   SL      SNP 0.164
+PV5.0   TL      SNP 0.112
+PV1.0   AL      HAP 0.000
+PV1.0   SL      HAP 0.004
+PV1.0   TL      HAP 0.008
+PV2.5   AL      HAP 0.008
+PV2.5   SL      HAP 0.012
+PV2.5   TL      HAP 0.008
+PV5.0   AL      HAP 0.108
+PV5.0   SL      HAP 0.140
+PV5.0   TL      HAP 0.140
+
+pow$avD = pow$avgDistHit/1000
+pow %>% filter(PV == "PV5.0"  & Gmod != "SL" & Nind >= 348) %>%
+	select(-c(CHR,PV,power,avgDistHit)) %>%
+	pivot_wider(names_from = testFlav, values_from = avD)
+
+Gmod   Nind   SNP   HAP
+ AL      348 626.   72.9
+ AL      500 100.   60.2
+ AL      750  45.6  52.9
+ AL     1000  44.6  47.4
+ AL     1500  37.3  37.0
+ AL     2000  34.1  32.3
+ TL      348 781.  169. 
+ TL      500 379.   63.9
+ TL      750  98.9  64.7
+ TL     1000  49.8  56.4
+ TL     1500  76.7  46.3
+ TL     2000  72.5  73.4
+ 
+Gmod = AL (all) or TL (ten cause).  I ignore SL as localization can be extremely good.
+SNP = average distance in kb between the most significant marker and the causative locus (conditional on a hit) for SNP-based tests
+HAP = average distance in kb between the most significant marker and the causative locus (conditional on a hit) for HAP-based tests
+
+...when you get a hit, localization can be very good for 5% QTL, even when N=348
+
+pow %>% filter(PV == "PV2.5"  & Gmod != "SL" & Nind >= 348) %>%
+	select(-c(CHR,PV,power,avgDistHit)) %>%
+	pivot_wider(names_from = testFlav, values_from = avD)
+
+
+The same trend hold for 2.5% var ... provided samples sizes are larger (say N >=1000)
+
+Gmod   Nind    SNP     HAP
+AL      348 3998.  21012. 
+AL      500 2522.   3812. 
+AL      750  366.   1249. 
+AL     1000  270.     67.8
+AL     1500   47.6   138. 
+AL     2000   45.9    50.9
+TL      348  909.     29.2
+TL      500 1034.   2075. 
+TL      750  441.     60.8
+TL     1000  312.     77.1
+TL     1500   57.0    62.0
+TL     2000   91.3    56.7
+
+
+################################################
+################################################
+##############   348 samples ###################
+################################################
+################################################
+
+### break the genotypes into equal sized hunks
+### also extract SNPs to make kinship matrix
+
+mkdir simgenoHunksII
+sbatch breakgenome.sh
+
+### output
+PhilsampsII/HAP.all.sort.txt  # concatenate genome
+PhilsampsII/SNP.all.sort.txt
+simgenoHunksII/*              # above in pieces
+Phil.parts.SNP.txt   #list of 322 indicies for subsetting
+Phil.parts.HAP.txt   #322
+hard.calls.txt       # every 631st SNP as hardcall to make kinship matrix
+
+# number of SNPs post filtering
+wc -l PhilsampsII/SNP.all.sort.txt   # -> 16087368
+
+sbatch kinPCsmall.sh
+
+# output
+kinship.pdf          # kinship plot
+yr.348.small.txt     # phenotypes for 348 scan (all wB)
+yr.348.PC.small.txt  # 1st 15 PCs using kinship
+kinship.popkin.txt   # kinship matrix
+
+mkdir PhilscanSNP
+mkdir PhilscanHAP
+
+sbatch test.HAPer.II.sh    # first two samples 6 CPU, 3 looks OK
+seff 8916967_1
+
+sbatch HAPer.II.sh
+# Done Nov 16th at 10 AM
+
+#!/bin/bash
+#SBATCH --job-name=catZip
+#SBATCH -A tdlong_lab
+#SBATCH -p standard          
+#SBATCH --cpus-per-task=1
+cat PhilscanHAP/temppow_HAP* | gzip -c > PhilscanHAP/bigpow_HAP.txt.gz
+rm PhilscanHAP/temppow_HAP*
+cat PhilscanHAP/tempLOD_HAP* | gzip -c > PhilscanHAP/bigLOD_HAP.txt.gz   
+
+R
+library(data.table)
+library(tidyverse)
+
+Hpow = fread("PhilscanHAP/bigpow_HAP.txt.gz",header=FALSE)
+colnames(Hpow) = c("testCHR","causeCHR","PV","Gmod","BG","CauseSNP","nHits","bestHit","whichBestHit")
+sHdist = Hpow %>% mutate(PV=recode(PV, PV10 = "PV1.0", PV25 = "PV2.5", PV50 = "PV5.0")) %>% 
+	group_by(causeCHR,CauseSNP,PV,Gmod,BG) %>%
+	slice(which.max(bestHit)) %>% filter(nHits>=1) %>%
+	mutate(correctCHR = (testCHR==causeCHR)) %>%
+	mutate(distFromCause = abs(whichBestHit-CauseSNP)) %>%
+	group_by(causeCHR,PV,Gmod,BG) %>%
+	summarize(percentHit=n()/250,percentCorrChr=sum(correctCHR)/250,mdist=mean(distFromCause[correctCHR]))
+sHdist$testFlav = rep("HAP",nrow(sHdist))
+write.table(sHdist,"temp.pow.348.HAPonly.txt")
+
+
+####################    
+## SNPs were harder as the file sizes were huge
+####################
+
+## I was having problems memory optimizing SNPer.
+## I am testing a few ideas here.  One is reverting to a loop in an attempt to save some memory
+## with big matrix manipulations
+## the second is to separate the processing of the big LOD file ... just print it out
+## I can process it quickly using a big memory job
+sbatch SNPer.test.sh
+for i in {1..322};do  last=`tail -n 1 slurm-8995772_$i.out`;   echo -e "$i\t$last";done
+for i in {1..10};do  last=`seff 8995772_$i | grep State`;   echo -e "$i\t$last";done
+for i in {1..10};do  last=`seff 8995772_$i | grep Memory | grep Efficiency`;   echo -e "$i\t$last";done
+
+## this has got it
+## but now the final step is separated from generating the LOD files
+## the first script generates the LODs using 2 cores and 12 hours
+## the second (process) script uses xx cores but only xx minutes
+
+sbatch SNPer.sim4500.sh
+#  check all jobs finished
+for i in {11..322};do  last=`seff 8997728_$i | grep State`;   echo -e "$i\t$last";done
+
+## gzip the LODs
+## cat PhilscanSNP/temppow_LOD_* | gzip -c > PhilscanSNP/bigLOD_SNP.txt.gz
+sbatch catzip.sh
+
+## partially process raw LODs to extract some information
+head -n 1 yr.348.small.txt > colnames.yr.348.small.txt
+sbatch SNPer.sim4500.process.sh
+
+# in = PhilscanSNP/temppow_LOD_aa.txt   -> Chr, Pos, Pheno1, Pheno2,..., Pheno4500
+# out =  PhilscanSNP/temppow_pow_aa.txt -> Pheno, Chr_top_hit, Pos_top_hit, LOD_top_hit, N_hit_g7.5  with 4500 rows = phenotypes
+
+salloc -A tdlong_lab --ntasks=4 srun --pty /bin/bash -i
+module load R/3.6.2
+
+
+cat PhilscanSNP/temppow_pow* > PhilscanSNP/tempbigpow_SNP.txt
+R
+library(tidyverse)
+library(data.table)
+
+mmm = read.table("PhilscanSNP/tempbigpow_SNP.txt",header=FALSE)
+colnames(mmm) = c("Pheno", "Chr_top_hit", "Pos_top_hit", "LOD_top_hit", "N_hit6")
+
+myLOD = mmm %>%
+	separate(Pheno, c("CauseChr", "Gmod", "PV", "BGV", "causeSNP"),sep="_") %>%
+	mutate(causeSNP = as.numeric(causeSNP)) %>%
+	mutate(PV=recode(PV, PV10 = "PV1.0", PV25 = "PV2.5", PV50 = "PV5.0")) %>%
+	group_by(CauseChr, PV, Gmod, BGV, causeSNP) %>% 
+	summarize(totalHits = sum(N_hit6), 
+		bestHit = max(LOD_top_hit),
+		whichBestChr = Chr_top_hit[which.max(LOD_top_hit)],
+		whichBestHit = Pos_top_hit[which.max(LOD_top_hit)]) %>%
+	mutate(correctChr = (whichBestChr==CauseChr),
+		absDistKb = abs(whichBestHit - causeSNP)/1000)
+# check that it is correct		
+myLOD %>% ungroup() %>%
+	group_by(CauseChr, PV, Gmod, BGV) %>% summarize(n())
+
+write.table(myLOD,"PhilscanSNP/bigpow_SNP.txt")
+
+myLOD2 = myLOD %>% ungroup() %>%
+	group_by(CauseChr, PV, Gmod, BGV) %>%
+	summarize(meanNHit = mean(totalHits[bestHit>7.5 & correctChr]),
+		meanbestHit = mean(bestHit[bestHit>7.5 & correctChr]),
+		percentHit=sum(bestHit>7.5)/250,
+		percentHitCorrChr=sum(bestHit>7.5 & correctChr)/250,
+		meandist=mean(absDistKb[bestHit>7.5 & correctChr]),
+		mediandist=median(absDistKb[bestHit>7.5 & correctChr]))
+
+myLOD2 %>% ungroup() %>% filter(CauseChr=="Chr19") %>% summarize(mean(percentHit))   # 3.6% so bang on
+
+write.table(myLOD2,"PhilscanSNP/bigpow_SNP_summary.txt")
+				
+options("width"=200)
+myLOD2 %>% print()
+
+CauseChr	PV	Gmod	BGV	meanNHit	meanbestHit	percentHit	percentHitCorrChr	meandist	mediandist
+Chr19	PV1.0	AL	wB	NaN	NaN	0.012	0	NaN	NA
+Chr19	PV1.0	SL	wB	NaN	NaN	0.008	0	NaN	NA
+Chr19	PV1.0	TL	wB	NaN	NaN	0	0	NaN	NA
+Chr19	PV2.5	AL	wB	NaN	NaN	0.036	0	NaN	NA
+Chr19	PV2.5	SL	wB	NaN	NaN	0.016	0	NaN	NA
+Chr19	PV2.5	TL	wB	NaN	NaN	0.012	0	NaN	NA
+Chr19	PV5.0	AL	wB	NaN	NaN	0.084	0	NaN	NA
+Chr19	PV5.0	SL	wB	NaN	NaN	0.092	0	NaN	NA
+Chr19	PV5.0	TL	wB	NaN	NaN	0.06	0	NaN	NA
+
+Chr23	PV1.0	AL	wB	43.5	8.07	0.024	0.008	640	640
+Chr23	PV1.0	SL	wB	5.5	7.84	0.008	0.008	11750	11750
+Chr23	PV1.0	TL	wB	7	8.09	0.02	0.012	959	777
+Chr23	PV2.5	AL	wB	1544	8.78	0.164	0.144	1102	438
+Chr23	PV2.5	SL	wB	2150	8.66	0.1	0.096	905	280
+Chr23	PV2.5	TL	wB	1974	8.57	0.088	0.072	3090	845
+Chr23	PV5.0	AL	wB	4982	9.58	0.508	0.5	969	362
+Chr23	PV5.0	SL	wB	4632	9.54	0.524	0.508	918	398
+Chr23	PV5.0	TL	wB	5950	9.82	0.488	0.48	1118	563
+
+with N=348 ...:
+	- power is low for PV = 2.5%
+	- power is low for PV = 5.0% but you would get a few
+	- localization is 1-3Mb, so not great, but OK for mapping with this N
+
+
+# writing to PhilscanSNP and PhilscanHAP
+# bigpow are summaries
+# bigLOD are per marker LOD scores
+# note the formating of the LOD files
+# bigLOD_SNP.txt.gz            # all the LOD scores for SNPs {CHR,POS,LOD1,LOD2,...} ... head -n1 yr.348.small.txt gives names of columns 3..ncol
+# bigLOD_HAP.txt.gz            # all the LOD scores for HAPs {CHR,POS,LOD,PHENO_FROM_WHERE}
+
+# summaries =
+mv temp.pow.348.HAPonly.txt PhilscanHAP/bigpow_HAP_summary.txt
+PhilscanSNP/bigpow_SNP.txt
+PhilscanSNP/bigpow_SNP_summary.txt
+
+
+HAPs only .... Nov 17 = sHdist
+causeCHR PV    Gmod  BG    percentHit percentCorrChr    mdist testFlav
+Chr19    PV1.0 AL    wB         0.008          0         NaN  HAP     
+Chr19    PV1.0 SL    wB         0.02           0         NaN  HAP     
+Chr19    PV1.0 TL    wB         0.008          0         NaN  HAP     
+Chr19    PV2.5 AL    wB         0.016          0         NaN  HAP     
+Chr19    PV2.5 SL    wB         0.02           0         NaN  HAP     
+Chr19    PV2.5 TL    wB         0.02           0         NaN  HAP     
+Chr19    PV5.0 AL    wB         0.032          0         NaN  HAP     
+Chr19    PV5.0 SL    wB         0.02           0         NaN  HAP     
+Chr19    PV5.0 TL    wB         0.016          0         NaN  HAP     
+Chr23    PV1.0 AL    wB         0.016          0.008  563188. HAP     
+Chr23    PV1.0 SL    wB         0.012          0         NaN  HAP     
+Chr23    PV1.0 TL    wB         0.008          0.004 3957238  HAP     
+Chr23    PV2.5 AL    wB         0.092          0.076 2305364. HAP     
+Chr23    PV2.5 SL    wB         0.036          0.032 2383200. HAP     
+Chr23    PV2.5 TL    wB         0.04           0.032 4161144. HAP     
+Chr23    PV5.0 AL    wB         0.292          0.284 1352878. HAP     
+Chr23    PV5.0 SL    wB         0.308          0.292  818844. HAP     
+Chr23    PV5.0 TL    wB         0.296          0.292 1451405. HAP     
+
+sHdist %>% filter(causeCHR=="Chr19") %>% ungroup() %>% summarize(mean(percentHit)) = 1.78% so FPR is OK
+
+correct CHR at:
+	2.5% power = 9.2/3.6/4.0    for A/S/T genetic models
+	5.0% power = 29.2/30.0/26.6 for A/S/T genetic models
+
+I guess these are not significantly different between genetic models.  So I average ~6% @ 2.5% and 29% @ 5.0%
+
+
+
+##########   Phillip noticed the diagonal of the kinship matrix is not 1
+# why is the diagonal of K not 1
+# From the docs -> The usual kinship matrix contains self-kinship values along their diagonal given by `diag(kinship) = ( 1 + inbr ) / 2`, where `inbr` is the vector of inbreeding coefficient.
+# my suspicion is that the diagonal of the matrix doesn't impact the model fits, but I can test that hypothesis
+# we confirmed that by running some limited scans using a kinship matrix with the diagonal changed to 1s
+# so I do not think this is a problem
+#############  
+
+
+
+###############################
+### REAL PHENOTYPES
+###############################
+
+module load R/3.6.2
+R
+BT=read.table("k6.txt")
+BT=BT[,c(8,9)]
+cBT=colnames(BT)
+BTbig = BT
+for(i in 1:10){
+	temp = BT[sample(1:348,348,replace=FALSE),]
+	colnames(temp) = paste0(cBT,"_shuff_",i)
+	BTbig = cbind(BTbig,temp)
+	}
+write.table(BTbig,"yr.348.BT.txt",quote=FALSE,row.names=FALSE)
+
+K = read.table("kinship.popkin.txt")
+PC15 = prcomp(K,retx=TRUE)$x[,1:15]
+# read in phenotypes
+YY = read.table("yr.348.BT.txt",header=TRUE)
+temp = apply(YY,2,function(Y) lm(Y~PC15)$resid)
+write.table(temp,"yr.348.BT.PC.txt")
+
+
+# add Chr 19 back to the scan
+mkdir simgenoHunksIII
+sbatch breakgenome.REAL.sh
+
+### output
+simgenoHunksIII/HAP.all.sort.txt  # concatenate genome
+simgenoHunksIII/SNP.all.sort.txt
+simgenoHunksIII/*              # above in pieces
+Phil.REAL.parts.HAP.txt   #list of 338 indicies for subsetting
+Phil.REAL.parts.SNP.txt   #338
+
+mkdir PhilRealSNP
+mkdir PhilRealHAP
+
+## edit 6 things from "Xer.II.sh / Xer.II.R"
+	- Number of tasks -> 338
+	- memory can be less 2 for each
+	- array file = Phil.REAL.parts.HAP.txt/Phil.REAL.parts.SNP.txt
+	- yr.348.BT.txt is input for SNP scans, yr.348.BT.PC.txt for hap scans
+	- PhilRealHAP/PhilRealSNP
+	- input directory = simgenoHunksIII
+
+sbatch HAPer.BT.sh   # 8939117
+sbatch SNPer.BT.sh   # 8939455
+
+for i in {1..338};do  last=`tail -n 1 slurm-8939117_$i.out`;   echo -e "$i\t$last";done
+for i in {1..338};do  last=`tail -n 1 slurm-8939455_$i.out`;   echo -e "$i\t$last";done
+
+
+# writing to PhilscanSNP and PhilscanHAP
+echo "CHR POS LOD dataset" > PhilRealHAP/bigpow_HAP.txt
+cat PhilRealHAP/tempLOD_HAP_* >> PhilRealHAP/bigpow_HAP.txt
+rm PhilRealHAP/tempLOD_HAP_*
+
+head -n1 yr.348.BT.txt
+echo "CHR POS normBleed residNormBleed normBleed_shuff_1 residNormBleed_shuff_1 normBleed_shuff_2 residNormBleed_shuff_2 normBleed_shuff_3 residNormBleed_shuff_3 normBleed_shuff_4 residNormBleed_shuff_4 normBleed_shuff_5 residNormBleed_shuff_5 normBleed_shuff_6 residNormBleed_shuff_6 normBleed_shuff_7 residNormBleed_shuff_7 normBleed_shuff_8 residNormBleed_shuff_8 normBleed_shuff_9 residNormBleed_shuff_9 normBleed_shuff_10 residNormBleed_shuff_10" > PhilRealSNP/bigpow_SNP.txt
+cat PhilRealSNP/temppow_LOD_* >> PhilRealSNP/bigpow_SNP.txt
+rm PhilRealSNP/temppow_LOD_*
+
+# I renamed so file naming schemes are more consistent
+mv PhilRealHAP/bigpow_HAP.txt PhilRealHAP/bigLOD_HAP.txt
+mv PhilRealSNP/bigpow_SNP.txt PhilRealSNP/bigLOD_SNP.txt
+
+
+salloc -A tdlong_lab --ntasks=16 srun --pty /bin/bash -i 
+module load R/3.6.2
+R
+
+library(tidyverse)
+library(data.table)
+temp=fread("PhilRealSNP/bigpow_SNP.txt",header=TRUE)
+out = apply(temp[,3:ncol(temp)],2,function(x) sum(x > 7.5))
+data.frame(row.names=names(out),hits=out)
+
+none @ 7.5, @ 6.5, a couple at 5.5
+
+                        hits
+normBleed                  2
+residNormBleed             1
+normBleed_shuff_1          0
+residNormBleed_shuff_1     0
+normBleed_shuff_2          0
+residNormBleed_shuff_2     0
+normBleed_shuff_3          0
+residNormBleed_shuff_3     0
+normBleed_shuff_4          0
+residNormBleed_shuff_4     0
+normBleed_shuff_5          0
+residNormBleed_shuff_5     4
+normBleed_shuff_6          0
+residNormBleed_shuff_6     1
+normBleed_shuff_7          0
+residNormBleed_shuff_7     0
+normBleed_shuff_8          2
+residNormBleed_shuff_8     0
+normBleed_shuff_9          2
+residNormBleed_shuff_9     0
+normBleed_shuff_10        29
+residNormBleed_shuff_10   29
+
+
+temp2=fread("PhilRealHAP/bigpow_HAP.txt",header=TRUE)
+out2 = temp2 %>% group_by(dataset) %>% summarize(nhit = sum(LOD > 6.0))
+out2 %>% print(n=30)
+
+none @ 6, @ 5, a couple at 4
+
+dataset                  nhit
+normBleed                  33
+normBleed_shuff_1           2
+normBleed_shuff_10         32
+normBleed_shuff_2           2
+normBleed_shuff_3           1
+normBleed_shuff_4          22
+normBleed_shuff_5          54
+normBleed_shuff_6          73
+normBleed_shuff_7           2
+normBleed_shuff_8           2
+normBleed_shuff_9          16
+residNormBleed              0
+residNormBleed_shuff_1      6
+residNormBleed_shuff_10    12
+residNormBleed_shuff_2     15
+residNormBleed_shuff_3      2
+residNormBleed_shuff_4     13
+residNormBleed_shuff_5     18
+residNormBleed_shuff_6    194
+residNormBleed_shuff_7      2
+residNormBleed_shuff_8      2
+residNormBleed_shuff_9      0
+
+
+### just for giggles can I map weight....
+
+BT=read.table("k6.txt")
+anova(lm(Weight~Age+Sex+timeDOB,data=BT))
+
+Analysis of Variance Table
+
+Response: Weight
+           Df Sum Sq Mean Sq F value    Pr(>F)    
+Age         1  112.4  112.41  8.1866  0.004478 ** 
+Sex         1  470.4  470.41 34.2578 1.126e-08 ***
+timeDOB     1    2.8    2.81  0.2048  0.651162    
+Residuals 344 4723.6   13.73                   
+
+anova(lm(log(Weight)~Sex+Age+Sex:Age,data=BT))
+
+Analysis of Variance Table
+
+Response: log(Weight)
+           Df  Sum Sq Mean Sq F value    Pr(>F)    
+Sex         1  0.8458 0.84581  28.971 1.363e-07 ***
+Age         1  0.5651 0.56511  19.356 1.449e-05 ***
+Sex:Age     1  0.5670 0.56704  19.422 1.402e-05 ***
+Residuals 344 10.0432 0.02920                      
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+BT$RWeight = lm(log(Weight)~Sex+Age+Sex:Age,data=BT)$resid
+quantile(BT$RWeight)
+
+         0%         25%         50%         75%        100% 
+-0.41565830 -0.11182048 -0.01033357  0.10786301  0.60080000 
+
+BTbig = matrix(nrow=nrow(BT),ncol=11)
+BTbig[,1] = BT$RWeight
+for(i in 2:11){
+	BTbig[,i] = BTbig[sample(1:348,348,replace=FALSE),1]
+	}
+BTbig=data.frame(BTbig)
+colnames(BTbig) = c("RWeight",paste0("RWeight_shuff_",1:10))
+write.table(BTbig,"yr.348.Weight.txt",quote=FALSE,row.names=FALSE)
+
+K = read.table("kinship.popkin.txt")
+PC15 = prcomp(K,retx=TRUE)$x[,1:15]
+# read in phenotypes
+YY = read.table("yr.348.Weight.txt",header=TRUE)
+temp = apply(YY,2,function(Y) lm(Y~PC15)$resid)
+write.table(temp,"yr.348.Weight.PC.txt")
+
+
+### output
+simgenoHunksIII/HAP.all.sort.txt  # concatenate genome
+simgenoHunksIII/SNP.all.sort.txt
+simgenoHunksIII/*              # above in pieces
+Phil.REAL.parts.HAP.txt   #list of 338 indicies for subsetting
+Phil.REAL.parts.SNP.txt   #338
+
+mkdir PhilWeightSNP
+mkdir PhilWeightHAP
+
+## edit 6 things from "Xer.BT.sh / Xer.BT.R"
+	- yr.348.BT.txt is input for SNP scans, yr.348.BT.PC.txt for hap scans
+	- PhilWeightHAP/PhilWeightSNP
+
+sbatch HAPer.Weight.sh   # 8981870
+sbatch SNPer.Weight.sh   # 8982230
+
+for i in {1..338};do  last=`tail -n 1 slurm-8981870_$i.out`;   echo -e "$i\t$last";done
+for i in {1..338};do  last=`tail -n 1 slurm-8982230_$i.out`;   echo -e "$i\t$last";done
+
+
+# writing to PhilscanSNP and PhilscanHAP
+echo "CHR POS LOD dataset" > PhilWeightHAP/bigLOD_HAP.txt
+cat PhilWeightHAP/tempLOD_HAP_* >> PhilWeightHAP/bigLOD_HAP.txt
+rm PhilWeightHAP/tempLOD_HAP_*
+
+head -n1 yr.348.Weight.txt
+echo "CHR POS RWeight RWeight_shuff_1 RWeight_shuff_2 RWeight_shuff_3 RWeight_shuff_4 RWeight_shuff_5 RWeight_shuff_6 RWeight_shuff_7 RWeight_shuff_8 RWeight_shuff_9 RWeight_shuff_10" > PhilWeightSNP/bigLOD_SNP.txt
+cat PhilWeightSNP/temppow_LOD_* >> PhilWeightSNP/bigLOD_SNP.txt
+rm PhilWeightSNP/temppow_LOD_*
+
+
+
+salloc -A tdlong_lab --ntasks=16 srun --pty /bin/bash -i 
+module load R/3.6.2
+R
+
+library(tidyverse)
+library(data.table)
+temp=fread("PhilWeightSNP/bigLOD_SNP.txt",header=TRUE)
+out = apply(temp[,3:ncol(temp)],2,function(x) sum(x > 7.5))
+out = apply(temp[,3:ncol(temp)],2,function(x) sum(x > 6.0))
+data.frame(row.names=names(out),hits=out)
+
+                 hits
+RWeight             1
+RWeight_shuff_1     0
+RWeight_shuff_2     0
+RWeight_shuff_3     0
+RWeight_shuff_4     0
+RWeight_shuff_5     3
+RWeight_shuff_6     0
+RWeight_shuff_7     0
+RWeight_shuff_8     0
+RWeight_shuff_9     0
+RWeight_shuff_10    2
+
+
+temp2=fread("PhilWeightHAP/bigLOD_HAP.txt",header=TRUE)
+out2 = temp2 %>% group_by(dataset) %>% summarize(nhit = sum(LOD > 6.0))
+out2
+
+dataset           nhit
+RWeight              1
+RWeight_shuff_1      0
+RWeight_shuff_10     0
+RWeight_shuff_2      0
+RWeight_shuff_3      0
+RWeight_shuff_4      0
+RWeight_shuff_5      0
+RWeight_shuff_6      0
+RWeight_shuff_7      0
+RWeight_shuff_8      0
+RWeight_shuff_9      0
+
+
+temp2 %>% filter(LOD>6)
+
+CHR      POS      LOD dataset
+Chr3 69841667 6.214956 RWeight = NC_051065.1:69841667
+
+
+###  Phillips interesting hits
+
+INDEX	TEST	PHENOTYPE_NAME	PHENOTYPE	MSM_CHROM	MSM	MSM_LOD	SCGB_chr	Cand_gene(+/-5Mb)
+4	hap	BT	residNormBleed	9	43.34846	3.9	NC_051070.1	
+4	hap	BT	residNormBleed	14	24.630059	3.6	NC_051075.1
+4	snp	BT	residNormBleed	22	6.602023	5.5	NC_051081.1	ENSMUSG00000034902(@1.8)=Pip5k1c
+4	snp	BT	residNormBleed	4	49.414518	4.7	NC_051066.1
+
+3	hap	RW	RWeight	3	69.841667	6.2	NC_051065.1	NPY(@ 67.9) & poorly annotated LEP at 59.1
+3	hap	RW	RWeight	17	17.476222	4.4	NC_051077.1	Dusp26(@18.1)=https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7828806/ & Nrg1()
+3	snp	RW	RWeight	22	2.283682	6.2	NC_051081.1
+3	snp	RW	RWeight	7	45.898804	5.4	NC_051069.1
+
+
+#######  heritability
+
+module load R/3.6.2
+R
+library(lme4)
+library(lme4qtl)
+
+K = read.table("kinship.popkin.txt")
+cnames = as.character(row.names(K))	
+row.names(K) = cnames
+colnames(K) = cnames
+K = as.matrix(K)
+
+YR = read.table("yr.348.BT.txt",header=TRUE)
+phen = data.frame(Y = YR[,2], IND = cnames)
+herBT = lme4qtl::relmatLmer(formula = Y ~ (1 | IND), data = phen, relmat = list(IND = K), REML = TRUE)
+lme4qtl::VarProp(herBT)
+# 6.5%
+
+YR = read.table("yr.348.Weight.txt",header=TRUE)
+phen = data.frame(Y = YR[,1], IND = cnames)
+herW = lme4qtl::relmatLmer(formula = Y ~ (1 | IND), data = phen, relmat = list(IND = K), REML = TRUE)
+lme4qtl::VarProp(herW)
+
+####### double check the weight hit
+
+
+yr.348.Weight.txt
+kinship.popkin.txt
+hapfile="/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/PhilsampsII/HAPs.Chr*.censor.rf.txt.gz" 
+zcat $hapfile | grep Chr3 | grep 69841667 > lw.hit.haps.txt
+mv lw.hit.haps.txt /share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/
+
+cd /share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM/
+module load R/3.6.2
+R
+
+library(lme4)
+library(lme4qtl)
+K = read.table("kinship.popkin.txt")
+cnames = as.character(row.names(K))	
+row.names(K) = cnames
+colnames(K) = cnames
+K = as.matrix(K)
+
+HH = read.table("lw.hit.haps.txt",header=FALSE)
+drop_PC_less_than = 0.05
+x = as.matrix(HH[,4:11])
+pcs = stats::prcomp(x)
+pcs_filter = pcs$x[, ((pcs$sdev^2 / sum(pcs$sdev^2)) > drop_PC_less_than)]
+YR = read.table("yr.348.Weight.txt",header=TRUE)
+phen = data.frame(Y = YR[,1], IND = cnames)
+phen = cbind(phen,pcs_filter)
+
+herW = lme4qtl::relmatLmer(formula = Y ~ (1 | IND), data = phen, relmat = list(IND = K), REML = TRUE)
+lme4qtl::VarProp(herW)
+mod2 = lme4qtl::relmatLmer(formula = Y ~ (1 | IND) + PC1 + PC2 + PC3 + PC4, data = phen, relmat = list(IND = K), REML = TRUE)
+
+summary(mod2)
+
+Fixed effects:
+            Estimate Std. Error t value
+(Intercept) -0.03551    0.05447  -0.652
+PC1          0.08033    0.01742   4.611
+PC2          0.03923    0.03265   1.202
+PC3         -0.04174    0.03333  -1.252
+PC4         -0.02392    0.03978  -0.601
+
+anova(mod2,herW)
+-log(9.519e-05,base=10)
+4.0 
+
+
+
+
+# Where is stuff
+dir="/share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM"
+# SNPcalls  (these are new filtered calls), I would not include ChrX in the scan
+# Chr pos call#1, #2, etc
+# these genotypes are used to repeat the genome scan for real BT
+# these are the genotypes to use for the new Figure 1
+# haps for Supp 1
+$dir/PhilsampsII/SNPs.Chr*.censor.txt.gz
+$dir/PhilsampsII/HAPs.Chr*.censor.rf.txt.gz 
+# the sample names
+$dir/Phillip.samples.txt
+# the phenotypes
+$dir/k6.txt
+# simulated phenotypes for the 348 individuals (interesting cases could be pulled out and run for Chr23)
+#  format of yr.348.txt & Phillip.samples.txt
+#	- columns are different sets of 348 Y's
+#	- rows are different individuals, unlabels, but given by Phillip.samples.txt
+#	- col headers describe the condition, eg. "Chr19_SL_PV1.0_nB_1008824" are phenotypes for
+#		-cause SNP at Chr19:1008825
+#		-the SL genetic model (S,A,T are single, all, ten causative SNPs)
+#		-PV1.0 means QTL accounts for 1% of total variation (also 2.5 & 5.0 tested)
+#		-nB tells me n0 background (only SNP and Ve), compared to wB where 50% of Vt is genetic
+$dir/yr.384.small.txt               # 348 individuals, all wB, 4500 combinations (2 chr * 3 gen model * 3 %var * 250 replicate loci)
+$dir/yr.348.PC.small.txt            # same as above but 1st 15 PCs based on kinship removed
+$dir/yr.348.BT.PC.txt               # 348 individuals, norm bleeding time or resid norm bleedtime (the trait we felt best), + 10 perms of same
+$dir/yr.348.BT.txt                  # same as above but 1st 15 PCs based on kinship removed
+$dir/yr.2000.txt                    # simulated for pseudo individuals scan
+
+# results of my scan of the 4500 columns above that are "wB"
+# chr, pos, pheno#1, pheno#2, etc.
+# summaries
+# columns are: c("testCHR","causeCHR","PV","Gmod","BG","CauseSNP","nHits","bestHit","whichBestHit")
+$dir/PhilscanHAP/bigpow_HAP.txt.gz
+$dir/PhilscanSNP/bigpow_SNP.txt.gz
+# all LODs ...
+# they do not have headers 
+$dir/PhilscanSNP/bigLOD_SNP.txt.gz            # all the LOD scores for SNPs {CHR,POS,LOD1,LOD2,...} ... head -n1 yr.348.small.txt gives names of columns 3..ncol
+$dir/PhilscanHAP/bigLOD_HAP.txt.gz            # all the LOD scores for HAPs {CHR,POS,LOD,PHENO_FROM_WHERE}
+
+# I think we might want to extract interesting genome-wide scans conditional on bigpow as that gives on statistic per simulated phenotype
+
+# the new kinship matrix made with SNPs
+$dir/kinship.popkin.txt
+# results of scans of BT or permuted BT, all positions all LODs 
+# residNormBT is the main character, it can be compared to permutations for HAP or SNP
+# qqplot or Manhattan plots
+PhilRealSNP/bigLOD_SNP.txt      # CHR, POS, LOD_A, LOD_B, etc   ... head -n1 yr.348.BT.txt gives names of columns 3..ncol
+PhilRealHAP/bigLOD_HAP.txt      # CHR, POS, LOD, dataset  ... so more tidy
+
+
+
+
+###########
+
+git init
+git add *.sh
+git add *.R
+git add *.py
+git add mouse.map.3.txt
+git add file.names.READ1.txt
+git commit -m "initial commit"
+# see https://reactgo.com/github-password-authentication-removed/
+git remote add origin https://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@github.com/tdlong/Pero_Power_revise.git
+git push -u origin master
+
+
+git add *.sh
+git add *.R
+git commit -m "Nov 17 updates"
+git push -u origin master
+
+
+
+###################################	
+###################################
+###################################
+###################################
+###         SCRIPTS
+###################################
+###################################
+###################################
+###################################
+	
+# findtop.py
+import sys
+import re
+
+def isfloat(value):
+  try:
+    float(value)
+    return True
+  except ValueError:
+    return False
+
+infile = sys.stdin
+# read in the header to get the colnames
+firstLine = infile.readline()
+firstLine = firstLine.rstrip()
+row=firstLine.split(" ")
+names=row[2:]
+ncol=len(names)
+# set up counter for each phenotype
+Cmax =  [0] * ncol
+Cchr = ['NA'] * ncol
+Cpos = [0] * ncol
+# now go through line by line, and keep track of the best LOD score (and where it is)
+for line in infile:
+	line = line.rstrip()
+	row=line.split(" ")
+	chr=row[0]
+	pos=row[1]
+	for i in range(2, ncol+2):
+		lod = row[i]
+		if isfloat(lod) and float(lod) > Cmax[0]:
+			Cmax[i-2] = float(lod)
+			Cchr[i-2] = chr
+			Cpos[i-2] = pos
+
+# now print out for each phenotype
+for i in range(0, ncol):
+	print(str(i)+"\t"+names[i]+"\t"+Cchr[i]+"\t"+str(Cpos[i])+"\t"+str(Cmax[i]))
+
+
+
+
+####### platelet hits
+
+      NC_chrom     start      stop            EN_gene score percent
+1  NC_051063.1  24532748  25637972 ENSMUSG00000052920  2005    99.8
+2  NC_051063.1  33333760  33335155 ENSMUSG00000033717  1353    98.5
+3  NC_051063.1  47316420  47393308 ENSMUSG00000048120  1166    89.2
+4  NC_051063.1  55227814  55244381 ENSMUSG00000024965  1878    97.5
+5  NC_051063.1  61559797  61573032 ENSMUSG00000000244   558    87.0
+6  NC_051063.1 124283240 124306626 ENSMUSG00000030534  1772    98.6
+7  NC_051063.1 169409065 169440578 ENSMUSG00000002602  2403    95.6
+8  NC_051063.1 169614385 169881171 ENSMUSG00000074272   426    68.5
+9  NC_051063.1 172376587 172378475 ENSMUSG00000002985   725    90.3
+10 NC_051063.1 172565986 172566574 ENSMUSG00000057667   472    92.3
+11 NC_051064.1  26890119  26953889 ENSMUSG00000042228  1467    98.2
+12 NC_051064.1  75258543  75265358 ENSMUSG00000039005  1385    79.0
+13 NC_051064.1 119893574 119907636 ENSMUSG00000006389  1528    91.0
+14 NC_051064.1 142943613 142953496 ENSMUSG00000058579   529    84.1
+15 NC_051064.1 144434445 144477401 ENSMUSG00000028583   180    77.3
+16 NC_051065.1 145644011 145778176 ENSMUSG00000001930  6817    91.1
+17 NC_051065.1 145839492 145872832 ENSMUSG00000030342   581    93.4
+18 NC_051065.1 146598139 146610533 ENSMUSG00000004266  1649    96.8
+19 NC_051066.1   6484572   6540728 ENSMUSG00000026797  1779    99.9
+20 NC_051066.1  14740177  14745361 ENSMUSG00000015085  1221    91.5
+21 NC_051066.1  67369150  67380468 ENSMUSG00000027249  1415    90.4
+22 NC_051066.1  95478064  95703289 ENSMUSG00000027298  2338    94.8
+23 NC_051066.1 103400193 103401552 ENSMUSG00000058620  1129    92.5
+24 NC_051066.1 104805645 104913043 ENSMUSG00000014361  2393    92.3
+25 NC_051066.1 142040939 142091437 ENSMUSG00000027523  2496    88.9
+26 NC_051067.1  11747291  11791606 ENSMUSG00000021457  1714    96.6
+27 NC_051067.1  57656072  57736608 ENSMUSG00000026778  1933    96.0
+28 NC_051067.1  86134155  86134809 ENSMUSG00000031778   319    74.8
+29 NC_051067.1 116121428 116264516 ENSMUSG00000053399  3194    94.4
+30 NC_051068.1  29989099  30063006 ENSMUSG00000027737  1373    96.1
+31 NC_051068.1  38723754  38724783 ENSMUSG00000036353   897    93.6
+32 NC_051068.1  40048445  40049564 ENSMUSG00000027765  1041    96.6
+33 NC_051068.1  40346305  40346854 ENSMUSG00000036894   549   100.0
+34 NC_051068.1  59899992  59906456 ENSMUSG00000033860  1065    90.8
+35 NC_051068.1  59916010  59922747 ENSMUSG00000028001  1463    86.0
+36 NC_051068.1  59931900  59939272 ENSMUSG00000033831  1207    93.1
+37 NC_051068.1  66007838  66017666 ENSMUSG00000028073  2398    89.9
+38 NC_051068.1  83230350  83278127 ENSMUSG00000027882  1647    97.5
+39 NC_051069.1  32303342  32448708 ENSMUSG00000032020  1871    99.3
+40 NC_051069.1  87516378  87584649 ENSMUSG00000032462  2990    98.0
+41 NC_051069.1 113046318 113049717 ENSMUSG00000071866   476    98.8
+42 NC_051070.1  52657182  52672377 ENSMUSG00000022099  1145    98.5
+43 NC_051070.1  59782587  59798849 ENSMUSG00000014453  1321    94.7
+44 NC_051070.1 109980491 109994717 ENSMUSG00000021948  1736    93.9
+45 NC_051071.1    231248    232622 ENSMUSG00000045318  1320    98.1
+46 NC_051071.1   1725264   1725909 ENSMUSG00000060708   531    91.2
+47 NC_051071.1  17952553  17987626 ENSMUSG00000020120   951    96.2
+48 NC_051071.1  59537672  59583637 ENSMUSG00000054892  1262    91.2
+49 NC_051071.1  59603837  59674288 ENSMUSG00000029217  1773    98.4
+50 NC_051071.1  62059031  62093335 ENSMUSG00000029231  2995    96.3
+51 NC_051071.1  77157825  77158508 ENSMUSG00000029373   201    82.4
+52 NC_051072.1  53102914  53117101 ENSMUSG00000048376   981    88.8
+53 NC_051073.1  72603276  72613573 ENSMUSG00000022877   768    79.2
+54 NC_051074.1  33142124  33171172 ENSMUSG00000026249  1042    94.2
+55 NC_051074.1  40982795  41054041 ENSMUSG00000026193  6821    96.6
+56 NC_051075.1  75488786  75540536 ENSMUSG00000021262  1184    98.7
+57 NC_051076.1  27602063  27630200 ENSMUSG00000038235   681    89.6
+58 NC_051076.1  27824166  27827524 ENSMUSG00000058715   159    91.7
+59 NC_051076.1  34846226  34870220 ENSMUSG00000026580  1455    83.2
+60 NC_051076.1  39587949  39702085 ENSMUSG00000056220  2098    97.4
+61 NC_051076.1  48611744  49140870 ENSMUSG00000026365  1548    77.3
+62 NC_051077.1  54763251  54771055 ENSMUSG00000031849  2054    95.9
+63 NC_051079.1  49538531  49539785 ENSMUSG00000045730  1092    93.6
+64 NC_051080.1  36877181  36893087 ENSMUSG00000000489   640    94.7
+65 NC_051080.1  46518798  46551805 ENSMUSG00000022297  1603    88.1
+66 NC_051081.1   1804412   1828880 ENSMUSG00000034902  1839    97.5
+67 NC_051082.1  13038286  13050147 ENSMUSG00000042594  1330    91.3
+68 NC_051082.1  41651889  41668394 ENSMUSG00000025856   594    98.4
+69 NC_051083.1  16223942  16227216 ENSMUSG00000031162   991    91.4
+70 NC_051083.1 105337087 105338041 ENSMUSG00000048970   863    95.6
+71 NC_051083.1 119720563 119732373 ENSMUSG00000031132   512    83.1
+72 NC_051084.1   4243476   4250206 ENSMUSG00000023993   518    82.4
+73 NC_051084.1   6143635   6150368 ENSMUSG00000015605  1406    97.5
+74 NC_051086.1  23551446  23598357 ENSMUSG00000057880  1379    96.7
+75 NC_051086.1  41950507  41995840 ENSMUSG00000009900  1047    99.8
+76 NC_051086.1  53208280  53220284 ENSMUSG00000000320  1666    92.3
+77 NC_051086.1  53674940  53677031 ENSMUSG00000050675  1012    78.9
+78 NC_051086.1  56614553  56627921 ENSMUSG00000020787  1116    97.2
+79 NC_051086.1  82888067  82924086 ENSMUSG00000020611  1110    99.3
+80 NC_051086.1  83945552  84343003 ENSMUSG00000050965  1986    99.8
+81 NC_051086.1  87774898  87832251 ENSMUSG00000020689  2095    94.8
+82 NC_051086.1  89976324  89992772 ENSMUSG00000034664  2227    86.9
+83 NC_051086.1 102900198 102904861 ENSMUSG00000017446   662    91.2
+
+
+Sequence name  	Length (bp) including gaps  	alias sequence names  
+NC_051063.1	193,658,164  	chr1, CM026041.1, 1
+NC_051065.1	159,738,685  	chr3, CM026043.1, 3
+NC_051064.1	154,649,009  	chr2, CM026042.1, 2
+NC_051066.1	151,869,327  	chr4, CM026044.1, 4
+NC_051067.1	145,700,154  	chr5, CM026045.1, 5
+NC_051083.1	138,232,706  	chrX, X, CM026061.1
+NC_051068.1	133,087,326  	chr6, CM026046.1, 6
+NC_051069.1	118,845,208  	chr7, CM026047.1, 7
+NC_051070.1	114,273,790  	chr9, CM026048.1, 9
+NC_051086.1	106,604,048  	chr8b, CM026064.1, 8b
+NC_051071.1	93,642,674  	chr10, CM026049.1, 10
+NC_051075.1	91,293,109  	chr14, CM026053.1, 14
+NC_051076.1	90,487,634  	chr15, CM026054.1, 15
+NC_051079.1	84,080,322  	chr19, CM026057.1, 19
+NC_051073.1	83,119,451  	chr12, CM026051.1, 12
+NC_051084.1	79,846,141  	chr16_21, CM026062.1, 16_21
+NC_051072.1	69,407,300  	chr11, CM026050.1, 11
+NC_051074.1	66,178,483  	chr13, CM026052.1, 13
+NC_051080.1	65,585,891  	chr20, CM026058.1, 20
+NC_051085.1	58,348,646  	chr8a, CM026063.1, 8a
+NC_051081.1	56,493,492  	chr22, CM026059.1, 22
+NC_051077.1	56,153,843  	chr17, CM026055.1, 17
+NC_051078.1	47,548,717  	chr18, CM026056.1, 18
+NC_051082.1	46,490,564  	chr23, CM026060.1, 23
+

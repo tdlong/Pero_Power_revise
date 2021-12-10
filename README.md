@@ -30,10 +30,11 @@ sbatch stitch.Nov13.sh
 ### identify samples with Bleeding time data
 p="STI8_revII/Chr23/stitch.Chr23.vcf.gz"
 zcat $p | head -n 12 | tail -n 1 | cut -f 10- >geno.samples.txt
-```
 
 # required k5.txt in helperfiles
-R
+```
+```R
+#R
 k5=read.table("k5.txt",header=TRUE)
 g=scan(file="geno.samples.txt",what=character(),sep="\t")
 gtemp = g[g %in% as.character(k5$ID)]
@@ -42,7 +43,8 @@ write.table(k6,"k6.txt")
 for(i in 1:length(gtemp)){
 	cat(gtemp2[i],"\n",file=Phillip.samples.txt,append=TRUE)
 	}
-
+```
+```bash
 wc -l Phillip.samples.txt # 348
 cat Phillip.samples.txt | tr -d ' ' > temp.txt
 mv temp.txt Phillip.samples.txt
@@ -103,8 +105,9 @@ ls simgenoHunks/HAPs.part* | cut -f2 -d"/" | cut -f3 -d"." > temp.parts.HAP.txt
 # eg
 # simgenoHunks/HAPs.part.aa.gz 
 # simgenoHunks/SNPs.part.aa.gz 
-
-R
+```
+```R
+#R
 Nind=c(100,250,348,500,750,1000,1500,2000)
 part=scan("temp.parts.SNP.txt",what=character())
 temp=expand.grid(Nind,part)
@@ -112,7 +115,8 @@ write.table(temp,"Chr23.hunks.SNP.txt",quote=FALSE,row.names=FALSE,col.names=FAL
 part=scan("temp.parts.HAP.txt",what=character())
 temp=expand.grid(Nind,part)
 write.table(temp,"Chr23.hunks.HAP.txt",quote=FALSE,row.names=FALSE,col.names=FALSE)
-
+```
+```bash
 wc -l Chr23.hunks.HAP.txt #320
 wc -l Chr23.hunks.SNP.txt #288
 
@@ -202,8 +206,9 @@ sbatch HAPer.II.sh
 cat PhilscanHAP/temppow_HAP* | gzip -c > PhilscanHAP/bigpow_HAP.txt.gz
 rm PhilscanHAP/temppow_HAP*
 cat PhilscanHAP/tempLOD_HAP* | gzip -c > PhilscanHAP/bigLOD_HAP.txt.gz   
-
-R
+```
+```R
+#R
 library(data.table)
 library(tidyverse)
 Hpow = fread("PhilscanHAP/bigpow_HAP.txt.gz",header=FALSE)
@@ -217,7 +222,8 @@ sHdist = Hpow %>% mutate(PV=recode(PV, PV10 = "PV1.0", PV25 = "PV2.5", PV50 = "P
 	summarize(percentHit=n()/250,percentCorrChr=sum(correctCHR)/250,mdist=mean(distFromCause[correctCHR]))
 sHdist$testFlav = rep("HAP",nrow(sHdist))
 write.table(sHdist,"temp.pow.348.HAPonly.txt")
-
+```
+```bash
 
 ## SNPs were harder as the file sizes are huge
 ## this has got it
@@ -248,8 +254,8 @@ Rscript process.348.sims.R
 
 # summaries =
 mv temp.pow.348.HAPonly.txt PhilscanHAP/bigpow_HAP_summary.txt
-PhilscanSNP/bigpow_SNP.txt
-PhilscanSNP/bigpow_SNP_summary.txt
+# PhilscanSNP/bigpow_SNP.txt
+# PhilscanSNP/bigpow_SNP_summary.txt
 
 ###############################
 ### REAL PHENOTYPES
@@ -285,8 +291,9 @@ head -n1 yr.348.BT.txt
 echo "CHR POS normBleed residNormBleed normBleed_shuff_1 residNormBleed_shuff_1 normBleed_shuff_2 residNormBleed_shuff_2 normBleed_shuff_3 residNormBleed_shuff_3 normBleed_shuff_4 residNormBleed_shuff_4 normBleed_shuff_5 residNormBleed_shuff_5 normBleed_shuff_6 residNormBleed_shuff_6 normBleed_shuff_7 residNormBleed_shuff_7 normBleed_shuff_8 residNormBleed_shuff_8 normBleed_shuff_9 residNormBleed_shuff_9 normBleed_shuff_10 residNormBleed_shuff_10" > PhilRealSNP/bigLOD_SNP.txt
 cat PhilRealSNP/temppow_LOD_* >> PhilRealSNP/bigLOD_SNP.txt
 rm PhilRealSNP/temppow_LOD_*
-
-R
+```
+```R
+#R
 library(tidyverse)
 library(data.table)
 temp=fread("PhilRealSNP/bigpow_SNP.txt",header=TRUE)
@@ -294,7 +301,8 @@ out = apply(temp[,3:ncol(temp)],2,function(x) sum(x > 7.5))
 data.frame(row.names=names(out),hits=out)
 temp2=fread("PhilRealHAP/bigpow_HAP.txt",header=TRUE)
 out2 = temp2 %>% group_by(dataset) %>% summarize(nhit = sum(LOD > 6.0))
-
+```
+```bash
 ###############################
 ### log(weight)
 ###############################
@@ -314,8 +322,9 @@ head -n1 yr.348.Weight.txt
 echo "CHR POS RWeight RWeight_shuff_1 RWeight_shuff_2 RWeight_shuff_3 RWeight_shuff_4 RWeight_shuff_5 RWeight_shuff_6 RWeight_shuff_7 RWeight_shuff_8 RWeight_shuff_9 RWeight_shuff_10" > PhilWeightSNP/bigLOD_SNP.txt
 cat PhilWeightSNP/temppow_LOD_* >> PhilWeightSNP/bigLOD_SNP.txt
 rm PhilWeightSNP/temppow_LOD_*
-
-R
+```
+```R
+#R
 library(tidyverse)
 library(data.table)
 temp=fread("PhilWeightSNP/bigLOD_SNP.txt",header=TRUE)
@@ -331,7 +340,8 @@ temp2 %>% filter(LOD>6)
 
 CHR      POS      LOD dataset
 Chr3 69841667 6.214956 RWeight = NC_051065.1:69841667
-
+```
+```bash
 #######  heritability
 
 Rscript heritability.R
@@ -389,3 +399,4 @@ helperfiles/PlateletHits.txt
 helperfiles/SCBG2normal.chromosomeName.txt
 # a less terse (more impenetrable) set of notes
 helperfiles/muchMoreExtensiveNotes.txt
+```

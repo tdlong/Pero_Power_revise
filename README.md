@@ -1,3 +1,4 @@
+```bash
 cd /share/adl/tdlong/peromyscus/mouse_GWAS_raw_illumina/makeBAM
 # requires file.names.READ1.txt in helperfiles
 sbatch fq2bam.sh
@@ -29,6 +30,7 @@ sbatch stitch.Nov13.sh
 ### identify samples with Bleeding time data
 p="STI8_revII/Chr23/stitch.Chr23.vcf.gz"
 zcat $p | head -n 12 | tail -n 1 | cut -f 10- >geno.samples.txt
+```
 
 # required k5.txt in helperfiles
 R
